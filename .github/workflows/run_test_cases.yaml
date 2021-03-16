@@ -1,0 +1,60 @@
+name: Run test case
+
+on:
+  push:
+    tags:
+      - v*
+  release:
+    types:
+      - published
+  pull_request:
+
+jobs:
+    run_static_analysis:
+        runs-on: ubuntu-20.04
+        container: emqx/build-env:erl23.2.2-ubuntu20.04
+
+        steps:
+        - uses: actions/checkout@v2
+        - name: xref
+          run: make xref
+        - name: dialyzer
+          run: make dialyzer
+
+    run_common_test:
+        runs-on: ubuntu-20.04
+
+        steps:
+        - uses: actions/checkout@v2
+        - name: set up
+          env:
+            MYSQL_TAG: 8
+            REDIS_TAG: 6
+            MONGO_TAG: 4
+            PGSQL_TAG: 13
+            LDAP_TAG: 2.4.50
+            GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          run: |
+            docker-compose -f .ci/apps_tests/docker-compose.yaml build --no-cache
+            docker-compose -f .ci/apps_tests/docker-compose.yaml up -d
+        - name: run eunit
+          run: |
+            docker exec -i erlang bash -c "make eunit"
+            docker exec --env EMQX_EXTRA_PLUGINS=all -i erlang bash -c "./rebar3 eunit --dir $(find lib-extra/ -mindepth 1 -maxdepth 2 -type l | tr '\n' ',')"
+        - name: run common test
+          run: |
+            docker exec -i erlang bash -c "make ct"
+            docker exec --env EMQX_EXTRA_PLUGINS=all -i erlang bash -c "./rebar3 ct --dir $(find lib-extra/ -mindepth 1 -maxdepth 2 -type l | tr '\n' ',')"
+        - name: run cover
+          run: |
+            docker exec -i erlang bash -c "make cover"
+            docker exec -i erlang bash -c "make coveralls"
+        - uses: actions/upload-artifact@v1
+          if: failure()
+          with:
+            name: logs
+            path: _build/test/logs
+        - uses: actions/upload-artifact@v1
+          with:
+            name: cover
+            path: _build/test/cover

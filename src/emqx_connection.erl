@@ -29,6 +29,8 @@
 -compile(nowarn_export_all).
 -endif.
 
+-elvis([{elvis_style, invalid_dynamic_call, #{ignore => [emqx_connection]}}]).
+
 %% API
 -export([ start_link/3
         , stop/1
@@ -80,8 +82,8 @@
           limit_timer :: maybe(reference()),
           %% Parse State
           parse_state :: emqx_frame:parse_state(),
-          %% Serialize function
-          serialize :: emqx_frame:serialize_fun(),
+          %% Serialize options
+          serialize :: emqx_frame:serialize_opts(),
           %% Channel State
           channel :: emqx_channel:channel(),
           %% GC State
@@ -103,11 +105,24 @@
 
 -define(ENABLED(X), (X =/= undefined)).
 
+-define(ALARM_TCP_CONGEST(Channel),
+        list_to_binary(io_lib:format("mqtt_conn/congested/~s/~s",
+            [emqx_channel:info(clientid, Channel),
+             emqx_channel:info(username, Channel)]))).
+
+-define(ALARM_CONN_INFO_KEYS, [
+    socktype, sockname, peername,
+    clientid, username, proto_name, proto_ver, connected_at
+]).
+-define(ALARM_SOCK_STATS_KEYS, [send_pend, recv_cnt, recv_oct, send_cnt, send_oct]).
+-define(ALARM_SOCK_OPTS_KEYS, [high_watermark, high_msgq_watermark, sndbuf, recbuf, buffer]).
+
 -dialyzer({no_match, [info/2]}).
 -dialyzer({nowarn_function, [ init/4
                             , init_state/3
                             , run_loop/2
                             , system_terminate/4
+                            , system_code_change/4
                             ]}).
 
 -spec(start_link(esockd:transport(), esockd:socket(), proplists:proplist())
@@ -203,7 +218,7 @@ init_state(Transport, Socket, Options) ->
     Limiter = emqx_limiter:init(Zone, PubLimit, BytesIn, RateLimit),
     FrameOpts = emqx_zone:mqtt_frame_options(Zone),
     ParseState = emqx_frame:initial_parse_state(FrameOpts),
-    Serialize = emqx_frame:serialize_fun(),
+    Serialize = emqx_frame:serialize_opts(),
     Channel = emqx_channel:init(ConnInfo, Options),
     GcState = emqx_zone:init_gc_state(Zone),
     StatsTimer = emqx_zone:stats_timer(Zone),
@@ -239,6 +254,7 @@ run_loop(Parent, State = #state{transport = Transport,
             exit_on_sock_error(Reason)
     end.
 
+-spec exit_on_sock_error(any()) -> no_return().
 exit_on_sock_error(Reason) when Reason =:= einval;
                                 Reason =:= enotconn;
                                 Reason =:= closed ->
@@ -260,7 +276,7 @@ recvloop(Parent, State = #state{idle_timeout = IdleTimeout}) ->
         Msg ->
             process_msg([Msg], Parent, ensure_stats_timer(IdleTimeout, State))
     after
-        IdleTimeout ->
+        IdleTimeout + 100 ->
             hibernate(Parent, cancel_stats_timer(State))
     end.
 
@@ -330,14 +346,14 @@ handle_msg({'$gen_call', From, Req}, State) ->
 handle_msg({Inet, _Sock, Data}, State) when Inet == tcp; Inet == ssl ->
     ?LOG(debug, "RECV ~0p", [Data]),
     Oct = iolist_size(Data),
-    emqx_pd:inc_counter(incoming_bytes, Oct),
+    inc_counter(incoming_bytes, Oct),
     ok = emqx_metrics:inc('bytes.received', Oct),
     parse_incoming(Data, State);
 
 handle_msg({incoming, Packet = ?CONNECT_PACKET(ConnPkt)},
            State = #state{idle_timer = IdleTimer}) ->
     ok = emqx_misc:cancel_timer(IdleTimer),
-    Serialize = emqx_frame:serialize_fun(ConnPkt),
+    Serialize = emqx_frame:serialize_opts(ConnPkt),
     NState = State#state{serialize  = Serialize,
                          idle_timer = undefined
                         },
@@ -373,8 +389,12 @@ handle_msg({Passive, _Sock}, State)
     handle_info(activate_socket, NState1);
 
 handle_msg(Deliver = {deliver, _Topic, _Msg},
-           State = #state{active_n = ActiveN}) ->
-    Delivers = [Deliver|emqx_misc:drain_deliver(ActiveN)],
+           #state{active_n = MaxBatchSize, transport = Transport,
+                  socket = Socket, channel = Channel} = State) ->
+    Delivers0 = emqx_misc:drain_deliver(MaxBatchSize),
+    emqx_congestion:maybe_alarm_too_many_publish(Socket, Transport, Channel,
+        length(Delivers0), MaxBatchSize),
+    Delivers = [Deliver|Delivers0],
     with_channel(handle_deliver, [Delivers], State);
 
 %% Something sent
@@ -400,7 +420,7 @@ handle_msg({close, Reason}, State) ->
 
 handle_msg({event, connected}, State = #state{channel = Channel}) ->
     ClientId = emqx_channel:info(clientid, Channel),
-    emqx_cm:register_channel(ClientId, info(State), stats(State));
+    emqx_cm:insert_channel_info(ClientId, info(State), stats(State));
 
 handle_msg({event, disconnected}, State = #state{channel = Channel}) ->
     ClientId = emqx_channel:info(clientid, Channel),
@@ -426,10 +446,14 @@ handle_msg(Msg, State) ->
 %%--------------------------------------------------------------------
 %% Terminate
 
-terminate(Reason, State = #state{channel = Channel}) ->
+-spec terminate(any(), state()) -> no_return().
+terminate(Reason, State = #state{channel = Channel, transport = Transport,
+          socket = Socket}) ->
     ?LOG(debug, "Terminated due to ~p", [Reason]),
-    emqx_channel:terminate(Reason, Channel),
-    close_socket(State),
+    Channel1 = emqx_channel:set_conn_state(disconnected, Channel),
+    emqx_congestion:cancel_alarms(Socket, Transport, Channel1),
+    emqx_channel:terminate(Reason, Channel1),
+    _ = close_socket(State),
     exit(Reason).
 
 %%--------------------------------------------------------------------
@@ -484,8 +508,12 @@ handle_timeout(_TRef, limit_timeout, State) ->
                         },
     handle_info(activate_socket, NState);
 
-handle_timeout(_TRef, emit_stats, State =
-               #state{channel = Channel}) ->
+handle_timeout(_TRef, emit_stats, State = #state{active_n = MaxBatchSize,
+        channel = Channel, transport = Transport, socket = Socket}) ->
+    {_, MsgQLen} = erlang:process_info(self(), message_queue_len),
+    emqx_congestion:maybe_alarm_port_busy(Socket, Transport, Channel, true),
+    emqx_congestion:maybe_alarm_too_many_publish(Socket, Transport, Channel,
+        MsgQLen, MaxBatchSize, true),
     ClientId = emqx_channel:info(clientid, Channel),
     emqx_cm:set_chan_stats(ClientId, stats(State)),
     {ok, State#state{stats_timer = undefined}};
@@ -578,7 +606,7 @@ handle_outgoing(Packet, State) ->
 
 serialize_and_inc_stats_fun(#state{serialize = Serialize}) ->
     fun(Packet) ->
-        case Serialize(Packet) of
+        case emqx_frame:serialize_pkt(Packet, Serialize) of
             <<>> -> ?LOG(warning, "~s is discarded due to the frame is too large!",
                          [emqx_packet:format(Packet)]),
                     ok = emqx_metrics:inc('delivery.dropped.too_large'),
@@ -594,11 +622,12 @@ serialize_and_inc_stats_fun(#state{serialize = Serialize}) ->
 %% Send data
 
 -spec(send(iodata(), state()) -> ok).
-send(IoData, #state{transport = Transport, socket = Socket}) ->
+send(IoData, #state{transport = Transport, socket = Socket, channel = Channel}) ->
     Oct = iolist_size(IoData),
     ok = emqx_metrics:inc('bytes.sent', Oct),
-    emqx_pd:inc_counter(outgoing_bytes, Oct),
-    case Transport:async_send(Socket, IoData) of
+    inc_counter(outgoing_bytes, Oct),
+    emqx_congestion:maybe_alarm_port_busy(Socket, Transport, Channel),
+    case Transport:async_send(Socket, IoData, [nosuspend]) of
         ok -> ok;
         Error = {error, _Reason} ->
             %% Send an inet_reply to postpone handling the error
@@ -612,16 +641,16 @@ send(IoData, #state{transport = Transport, socket = Socket}) ->
 handle_info(activate_socket, State = #state{sockstate = OldSst}) ->
     case activate_socket(State) of
         {ok, NState = #state{sockstate = NewSst}} ->
-            if OldSst =/= NewSst ->
-                   {ok, {event, NewSst}, NState};
-               true -> {ok, NState}
+            case OldSst =/= NewSst of
+                true -> {ok, {event, NewSst}, NState};
+                false -> {ok, NState}
             end;
         {error, Reason} ->
             handle_info({sock_error, Reason}, State)
     end;
 
 handle_info({sock_error, Reason}, State) ->
-    ?LOG(debug, "Socket error: ~p", [Reason]),
+    Reason =/= closed andalso ?LOG(error, "Socket error: ~p", [Reason]),
     handle_info({sock_closed, Reason}, close_socket(State));
 
 handle_info(Info, State) ->
@@ -693,23 +722,25 @@ close_socket(State = #state{transport = Transport, socket = Socket}) ->
 
 -compile({inline, [inc_incoming_stats/1]}).
 inc_incoming_stats(Packet = ?PACKET(Type)) ->
-    emqx_pd:inc_counter(recv_pkt, 1),
-    if
-        Type == ?PUBLISH ->
-            emqx_pd:inc_counter(recv_msg, 1),
-            emqx_pd:inc_counter(incoming_pubs, 1);
-        true -> ok
+    inc_counter(recv_pkt, 1),
+    case Type =:= ?PUBLISH of
+        true ->
+            inc_counter(recv_msg, 1),
+            inc_counter(incoming_pubs, 1);
+        false ->
+            ok
     end,
     emqx_metrics:inc_recv(Packet).
 
 -compile({inline, [inc_outgoing_stats/1]}).
 inc_outgoing_stats(Packet = ?PACKET(Type)) ->
-    emqx_pd:inc_counter(send_pkt, 1),
-    if
-        Type == ?PUBLISH ->
-            emqx_pd:inc_counter(send_msg, 1),
-            emqx_pd:inc_counter(outgoing_pubs, 1);
-        true -> ok
+    inc_counter(send_pkt, 1),
+    case Type =:= ?PUBLISH of
+        true ->
+            inc_counter(send_msg, 1),
+            inc_counter(outgoing_pubs, 1);
+        false ->
+            ok
     end,
     emqx_metrics:inc_sent(Packet).
 
@@ -737,6 +768,10 @@ stop(Reason, State) ->
 
 stop(Reason, Reply, State) ->
     {stop, Reason, Reply, State}.
+
+inc_counter(Key, Inc) ->
+    _ = emqx_pd:inc_counter(Key, Inc),
+    ok.
 
 %%--------------------------------------------------------------------
 %% For CT tests

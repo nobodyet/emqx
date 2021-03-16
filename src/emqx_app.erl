@@ -20,9 +20,13 @@
 
 -export([ start/2
         , stop/1
+        , get_description/0
+        , get_release/0
         ]).
 
 -define(APP, emqx).
+
+-include("emqx_release.hrl").
 
 %%--------------------------------------------------------------------
 %% Application callbacks
@@ -32,23 +36,21 @@ start(_Type, _Args) ->
     print_banner(),
     ekka:start(),
     {ok, Sup} = emqx_sup:start_link(),
-    ok = emqx_modules:load(),
+    ok = start_autocluster(),
     ok = emqx_plugins:init(),
-    emqx_plugins:load(),
+    _ = emqx_plugins:load(),
     emqx_boot:is_enabled(listeners)
       andalso (ok = emqx_listeners:start()),
-    start_autocluster(),
     register(emqx, self()),
-    emqx_alarm_handler:load(),
+    ok = emqx_alarm_handler:load(),
     print_vsn(),
     {ok, Sup}.
 
 -spec(stop(State :: term()) -> term()).
 stop(_State) ->
-    emqx_alarm_handler:unload(),
+    ok = emqx_alarm_handler:unload(),
     emqx_boot:is_enabled(listeners)
-      andalso emqx_listeners:stop(),
-    emqx_modules:unload().
+      andalso emqx_listeners:stop().
 
 %%--------------------------------------------------------------------
 %% Print Banner
@@ -58,16 +60,37 @@ print_banner() ->
     io:format("Starting ~s on node ~s~n", [?APP, node()]).
 
 print_vsn() ->
-    {ok, Descr} = application:get_key(description),
-    {ok, Vsn} = application:get_key(vsn),
-    io:format("~s ~s is running now!~n", [Descr, Vsn]).
+    io:format("~s ~s is running now!~n", [get_description(), get_release()]).
+
+get_description() ->
+    {ok, Descr0} = application:get_key(?APP, description),
+    case os:getenv("EMQX_DESCRIPTION") of
+        false -> Descr0;
+        "" -> Descr0;
+        Str -> string:strip(Str, both, $\n)
+    end.
+
+-ifdef(TEST).
+%% When testing, the 'cover' compiler stripps aways compile info
+get_release() -> release_in_macro().
+-else.
+%% Otherwise print the build number,
+%% which may have a git commit in its suffix.
+get_release() ->
+    {_, Vsn} = lists:keyfind(emqx_vsn, 1, ?MODULE:module_info(compile)),
+    VsnStr = release_in_macro(),
+    1 = string:str(Vsn, VsnStr), %% assert
+    Vsn.
+-endif.
+
+release_in_macro() ->
+    element(2, ?EMQX_RELEASE).
 
 %%--------------------------------------------------------------------
 %% Autocluster
 %%--------------------------------------------------------------------
-
 start_autocluster() ->
     ekka:callback(prepare, fun emqx:shutdown/1),
     ekka:callback(reboot,  fun emqx:reboot/0),
-    ekka:autocluster(?APP).
-
+    _ = ekka:autocluster(?APP), %% returns 'ok' or a pid or 'any()' as in spec
+    ok.

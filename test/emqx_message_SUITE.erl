@@ -19,8 +19,8 @@
 -compile(export_all).
 -compile(nowarn_export_all).
 
--include("emqx.hrl").
--include("emqx_mqtt.hrl").
+-include_lib("emqx/include/emqx.hrl").
+-include_lib("emqx/include/emqx_mqtt.hrl").
 -include_lib("eunit/include/eunit.hrl").
 
 all() -> emqx_ct:all(?MODULE).
@@ -210,3 +210,15 @@ t_to_map(_) ->
     ?assertEqual(List, emqx_message:to_list(Msg)),
     ?assertEqual(maps:from_list(List), emqx_message:to_map(Msg)).
 
+t_from_map(_) ->
+    Msg = emqx_message:make(<<"clientid">>, ?QOS_1, <<"topic">>, <<"payload">>),
+    Map = #{id => emqx_message:id(Msg),
+            qos => ?QOS_1,
+            from => <<"clientid">>,
+            flags => #{},
+            headers => #{},
+            topic => <<"topic">>,
+            payload => <<"payload">>,
+            timestamp => emqx_message:timestamp(Msg)},
+    ?assertEqual(Map, emqx_message:to_map(Msg)),
+    ?assertEqual(Msg, emqx_message:from_map(emqx_message:to_map(Msg))).
