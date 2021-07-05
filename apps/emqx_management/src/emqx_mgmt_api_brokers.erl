@@ -1,5 +1,5 @@
 %%--------------------------------------------------------------------
-%% Copyright (c) 2020 EMQ Technologies Co., Ltd. All Rights Reserved.
+%% Copyright (c) 2020-2021 EMQ Technologies Co., Ltd. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -18,8 +18,6 @@
 
 -include("emqx_mgmt.hrl").
 
--import(minirest, [return/1]).
-
 -rest_api(#{name   => list_brokers,
             method => 'GET',
             path   => "/brokers/",
@@ -37,13 +35,13 @@
         ]).
 
 list(_Bindings, _Params) ->
-    return({ok, [Info || {_Node, Info} <- emqx_mgmt:list_brokers()]}).
+    minirest:return({ok, [Info || {_Node, Info} <- emqx_mgmt:list_brokers()]}).
 
 get(#{node := Node}, _Params) ->
     case emqx_mgmt:lookup_broker(Node) of
         {error, Reason} -> 
-            return({error, ?ERROR2, Reason});
+            minirest:return({error, ?ERROR2, Reason});
         Info -> 
-            return({ok, Info})
+            minirest:return({ok, Info})
     end.
 

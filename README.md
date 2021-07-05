@@ -5,12 +5,12 @@
 [![Coverage Status](https://coveralls.io/repos/github/emqx/emqx/badge.svg?branch=master)](https://coveralls.io/github/emqx/emqx?branch=master)
 [![Docker Pulls](https://img.shields.io/docker/pulls/emqx/emqx)](https://hub.docker.com/r/emqx/emqx)
 [![Slack Invite](<https://slack-invite.emqx.io/badge.svg>)](https://slack-invite.emqx.io)
-[![Twitter](https://img.shields.io/badge/Follow-EMQ%20X-1DA1F2?logo=twitter)](https://twitter.com/emqtt)
-[![Community](https://img.shields.io/badge/Community-EMQ%20X-yellow?logo=github)](https://github.com/emqx/emqx/discussions)
+[![Twitter](https://img.shields.io/badge/Follow-EMQ-1DA1F2?logo=twitter)](https://twitter.com/EMQTech)
+[![YouTube](https://img.shields.io/badge/Subscribe-EMQ-FF0000?logo=youtube)](https://www.youtube.com/channel/UC5FjR77ErAxvZENEWzQaO5Q)
 
 [![The best IoT MQTT open source team looks forward to your joining](https://www.emqx.io/static/img/github_readme_en_bg.png)](https://www.emqx.io/careers)
 
-English | [简体中文](./README-CN.md) | [日本語](./README-JP.md)
+English | [简体中文](./README-CN.md) | [日本語](./README-JP.md) | [русский](./README-RU.md)
 
 *EMQ X* broker is a fully open source, highly scalable, highly available distributed MQTT messaging broker for IoT, M2M and Mobile applications that can handle tens of millions of concurrent clients.
 
@@ -28,15 +28,15 @@ See more details for building and running *EMQ X* on Windows in [Windows.md](./W
 #### Installing via EMQ X Docker Image
 
 ```
-docker run -d --name emqx -p 1883:1883 -p 8083:8083 -p 8883:8883 -p 8084:8084 -p 18083:18083 emqx/emqx
+docker run -d --name emqx -p 1883:1883 -p 8081:8081 -p 8083:8083 -p 8883:8883 -p 8084:8084 -p 18083:18083 emqx/emqx
 ```
 
 #### Installing via Binary Package
 
 Get the binary package of the corresponding OS from [EMQ X Download](https://www.emqx.io/downloads) page.
 
-- [Single Node Install](https://docs.emqx.io/broker/latest/en/getting-started/install.html)
-- [Multi Node Install](https://docs.emqx.io/broker/latest/en/advanced/cluster.html)
+- [Single Node Install](https://docs.emqx.io/en/broker/latest/getting-started/install.html)
+- [Multi Node Install](https://docs.emqx.io/en/broker/latest/advanced/cluster.html)
 
 
 ## Build From Source
@@ -63,7 +63,7 @@ _build/emqx/rel/emqx/bin/emqx console
 
 ## Quick Start
 
-If emqx is built from source, `cd _buid/emqx/rel/emqx`.
+If emqx is built from source, `cd _build/emqx/rel/emqx`.
 Or change to the installation root directory if emqx is installed from a release package.
 
 ```bash
@@ -89,16 +89,11 @@ make eunit ct
 
 ### To run subset of the common tests
 
-examples
+Examples
 
 ```bash
-./rebar3 ct --name 'test@127.0.0.1' -c -v --dir test,apps/emqx_sn,apps/emqx_coap
-./rebar3 ct --name 'test@127.0.0.1' -c -v --dir apps/emqx_auth_mnesi --suite emqx_acl_mnesia_SUITE
-./rebar3 ct --name 'test@127.0.0.1' -c -v --dir apps/emqx_auth_mnesi --suite emqx_acl_mnesia_SUITE --case t_rest_api
+make apps/emqx_bridge_mqtt-ct
 ```
-
-NOTE: Do *NOT* use full (relative) path to SUITE files like this `--suite apps/emqx_auth_mnesia/test/emqx_acl_mnesia_SUITE.erl`,
-because it will lead to a full copy of `apps` dir into `_buid/test/lib/emqx`.
 
 ### Dialyzer
 ##### To Analyze all the apps
@@ -108,22 +103,28 @@ make dialyzer
 
 ##### To Analyse specific apps, (list of comma separated apps)
 ```
-DIALYZER_ANALYSE_APP=emqx_lwm2m,emqx_auth_jwt,emqx_auth_ldap make dialyzer
+DIALYZER_ANALYSE_APP=emqx_lwm2m,emqx_authz make dialyzer
 ```
-
-## FAQ
-
-Visiting [EMQ X FAQ](https://docs.emqx.io/broker/latest/en/faq/faq.html) to get help of common problems.
-
-## Roadmap
-
-The [EMQ X Roadmap uses Github milestones](https://github.com/emqx/emqx/milestones) to track the progress of the project.
 
 ## Community
 
-The EMQ X community can be found on [GitHub Discussions](https://github.com/emqx/emqx/discussions), where you can ask questions, voice ideas, and share your projects.
+### FAQ
 
-To chat with other community members you can join the [EMQ X Slack](https://slack-invite.emqx.io).
+Visiting [EMQ X FAQ](https://docs.emqx.io/en/broker/latest/faq/faq.html) to get help of common problems.
+
+
+### Questions
+
+[GitHub Discussions](https://github.com/emqx/emqx/discussions) is where you can ask questions, and share ideas.
+
+### Proposals
+
+For more organised improvement proposals, you can send pull requests to [EIP](https://github.com/emqx/eip).
+
+### Plugin development
+
+To develop your own plugins, see [lib-extra/README.md](./lib-extra/README.md)
+
 
 ## MQTT Specifications
 
@@ -133,7 +134,7 @@ You can read the mqtt protocol via the following links:
 
 [MQTT Version 5.0](https://docs.oasis-open.org/mqtt/mqtt/v5.0/cs02/mqtt-v5.0-cs02.html)
 
-[MQTT SN](http://mqtt.org/new/wp-content/uploads/2009/06/MQTT-SN_spec_v1.2.pdf)
+[MQTT SN](https://www.oasis-open.org/committees/download.php/66091/MQTT-SN_spec_v1.2.pdf)
 
 ## License
 

@@ -1,5 +1,5 @@
 %%--------------------------------------------------------------------
-%% Copyright (c) 2020 EMQ Technologies Co., Ltd. All Rights Reserved.
+%% Copyright (c) 2020-2021 EMQ Technologies Co., Ltd. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -205,7 +205,7 @@ handle_deliver(Delivers, Channel = #channel{clientinfo = ClientInfo}) ->
                                           [ClientInfo], Msg),
                NMsg = emqx_mountpoint:unmount(Mountpoint, Msg1),
                #{node => NodeStr,
-                 id => hexstr(emqx_message:id(NMsg)),
+                 id => emqx_guid:to_hexstr(emqx_message:id(NMsg)),
                  qos => emqx_message:qos(NMsg),
                  from => fmt_from(emqx_message:from(NMsg)),
                  topic => emqx_message:topic(NMsg),
@@ -305,7 +305,7 @@ handle_call({subscribe, TopicFilter, Qos},
                          conn_state = connected,
                          clientinfo = ClientInfo}) ->
     case is_acl_enabled(ClientInfo) andalso
-         emqx_access_control:check_acl(ClientInfo, subscribe, TopicFilter) of
+         emqx_access_control:authorize(ClientInfo, subscribe, TopicFilter) of
         deny ->
             {reply, {error, ?RESP_PERMISSION_DENY, <<"ACL deny">>}, Channel};
         _ ->
@@ -325,7 +325,7 @@ handle_call({publish, Topic, Qos, Payload},
                                     = #{clientid := From,
                                         mountpoint := Mountpoint}}) ->
     case is_acl_enabled(ClientInfo) andalso
-         emqx_access_control:check_acl(ClientInfo, publish, Topic) of
+         emqx_access_control:authorize(ClientInfo, publish, Topic) of
         deny ->
             {reply, {error, ?RESP_PERMISSION_DENY, <<"ACL deny">>}, Channel};
         _ ->
@@ -590,9 +590,6 @@ default_clientinfo(#{peername := {PeerHost, _},
 
 stringfy(Reason) ->
     unicode:characters_to_binary((io_lib:format("~0p", [Reason]))).
-
-hexstr(Bin) ->
-    [io_lib:format("~2.16.0B",[X]) || <<X:8>> <= Bin].
 
 fmt_from(undefined) -> <<>>;
 fmt_from(Bin) when is_binary(Bin) -> Bin;

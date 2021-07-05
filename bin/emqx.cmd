@@ -16,8 +16,11 @@
 :: Set variables that describe the release
 @set rel_name=emqx
 @set rel_vsn={{ release_version }}
+@set REL_VSN=%rel_vsn%
 @set erts_vsn={{ erts_vsn }}
 @set erl_opts={{ erl_opts }}
+
+@set "CUTTLEFISH_ENV_OVERRIDE_PREFIX=EMQX_"
 
 @set script=%~n0
 
@@ -28,6 +31,7 @@
   set rel_root_dir=%%~fA
 )
 @set rel_dir=%rel_root_dir%\releases\%rel_vsn%
+@set RUNNER_ROOT_DIR=%rel_root_dir%
 
 @set etc_dir=%rel_root_dir%\etc
 @set lib_dir=%rel_root_dir%\lib

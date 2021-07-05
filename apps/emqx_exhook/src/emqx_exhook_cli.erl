@@ -1,5 +1,5 @@
 %%--------------------------------------------------------------------
-%% Copyright (c) 2020 EMQ Technologies Co., Ltd. All Rights Reserved.
+%% Copyright (c) 2020-2021 EMQ Technologies Co., Ltd. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -23,7 +23,8 @@
 cli(["server", "list"]) ->
     if_enabled(fun() ->
         Services = emqx_exhook:list(),
-        [emqx_ctl:print("HookServer(~s)~n", [emqx_exhook_server:format(Service)]) || Service <- Services]
+        [emqx_ctl:print("HookServer(~s)~n",
+                        [emqx_exhook_server:format(Service)]) || Service <- Services]
     end);
 
 cli(["server", "enable", Name0]) ->
@@ -74,7 +75,7 @@ hint() ->
 stats() ->
     lists:usort(lists:foldr(fun({K, N}, Acc) ->
         case atom_to_list(K) of
-            "exhook." ++ Key -> [{Key, N}|Acc];
+            "exhook." ++ Key -> [{Key, N} | Acc];
             _ -> Acc
         end
     end, [], emqx_metrics:all())).

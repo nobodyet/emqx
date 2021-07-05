@@ -1,5 +1,5 @@
 %%--------------------------------------------------------------------
-%% Copyright (c) 2020 EMQ Technologies Co., Ltd. All Rights Reserved.
+%% Copyright (c) 2020-2021 EMQ Technologies Co., Ltd. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -81,13 +81,14 @@
         , enabled :: boolean()
         , created_at :: integer() %% epoch in millisecond precision
         , description :: binary()
+        , state = normal :: atom()
         }).
 
 -record(resource,
         { id :: resource_id()
         , type :: resource_type_name()
         , config :: #{} %% the configs got from API for initializing resource
-        , created_at :: integer() %% epoch in millisecond precision
+        , created_at :: integer() | undefined %% epoch in millisecond precision
         , description :: binary()
         }).
 
@@ -153,6 +154,22 @@
                 throw(_ERROR_)
             end
         end()).
+
+-define(CLUSTER_CALL(Func, Args), ?CLUSTER_CALL(Func, Args, ok)).
+
+-define(CLUSTER_CALL(Func, Args, ResParttern),
+    fun() -> case rpc:multicall(ekka_mnesia:running_nodes(), ?MODULE, Func, Args, 5000) of
+        {ResL, []} ->
+            case lists:filter(fun(ResParttern) -> false; (_) -> true end, ResL) of
+                [] -> ResL;
+                ErrL ->
+                    ?LOG(error, "cluster_call error found, ResL: ~p", [ResL]),
+                    throw({Func, ErrL})
+            end;
+        {ResL, BadNodes} ->
+            ?LOG(error, "cluster_call bad nodes found: ~p, ResL: ~p", [BadNodes, ResL]),
+            throw({Func, {failed_on_nodes, BadNodes}})
+   end end()).
 
 %% Tables
 -define(RULE_TAB, emqx_rule).

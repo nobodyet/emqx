@@ -1,5 +1,5 @@
 %%--------------------------------------------------------------------
-%% Copyright (c) 2020 EMQ Technologies Co., Ltd. All Rights Reserved.
+%% Copyright (c) 2020-2021 EMQ Technologies Co., Ltd. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -21,8 +21,6 @@
 -include_lib("stdlib/include/qlc.hrl").
 -include_lib("emqx/include/emqx.hrl").
 -include_lib("emqx/include/emqx_mqtt.hrl").
-
--import(proplists, [get_value/2]).
 
 %% Nodes and Brokers API
 -export([ list_nodes/0
@@ -47,6 +45,8 @@
         , list_acl_cache/1
         , clean_acl_cache/1
         , clean_acl_cache/2
+        , clean_acl_cache_all/0
+        , clean_acl_cache_all/1
         , set_ratelimit_policy/2
         , set_quota_policy/2
         ]).
@@ -101,13 +101,6 @@
         , delete_banned/1
         ]).
 
-
--export([ enable_telemetry/0
-        , disable_telemetry/0
-        , get_telemetry_status/0
-        , get_telemetry_data/0
-        ]).
-
 %% Common Table API
 -export([ item/2
         , max_row_limit/0
@@ -135,11 +128,11 @@ node_info(Node) when Node =:= node() ->
     BrokerInfo = emqx_sys:info(),
     Info#{node              => node(),
           otp_release       => iolist_to_binary(otp_rel()),
-          memory_total      => get_value(allocated, Memory),
-          memory_used       => get_value(used, Memory),
+          memory_total      => proplists:get_value(allocated, Memory),
+          memory_used       => proplists:get_value(total, Memory),
           process_available => erlang:system_info(process_limit),
           process_used      => erlang:system_info(process_count),
-          max_fds           => get_value(max_fds, lists:usort(lists:flatten(erlang:system_info(check_io)))),
+          max_fds           => proplists:get_value(max_fds, lists:usort(lists:flatten(erlang:system_info(check_io)))),
           connections       => ets:info(emqx_channel, size),
           node_status       => 'Running',
           uptime            => iolist_to_binary(proplists:get_value(uptime, BrokerInfo)),
@@ -250,6 +243,19 @@ clean_acl_cache(Node, ClientId) when Node =:= node() ->
     end;
 clean_acl_cache(Node, ClientId) ->
     rpc_call(Node, clean_acl_cache, [Node, ClientId]).
+
+clean_acl_cache_all() ->
+    Results = [{Node, clean_acl_cache_all(Node)} || Node <- ekka_mnesia:running_nodes()],
+    case lists:filter(fun({_Node, Item}) -> Item =/= ok end, Results) of
+        []  -> ok;
+        BadNodes -> {error, BadNodes}
+    end.
+
+clean_acl_cache_all(Node) when Node =:= node() ->
+    emqx_acl_cache:drain_cache();
+
+clean_acl_cache_all(Node) ->
+    rpc_call(Node, clean_acl_cache_all, [Node]).
 
 set_ratelimit_policy(ClientId, Policy) ->
     call_client(ClientId, {ratelimit, Policy}).
@@ -482,34 +488,6 @@ create_banned(Banned) ->
 delete_banned(Who) ->
     emqx_banned:delete(Who).
 
-
-
-%%--------------------------------------------------------------------
-%% Telemtry API
-%%--------------------------------------------------------------------
-
-enable_telemetry() ->
-    lists:foreach(fun enable_telemetry/1,ekka_mnesia:running_nodes()).
-
-enable_telemetry(Node) when Node =:= node() ->
-    emqx_telemetry:enable();
-enable_telemetry(Node) ->
-    rpc_call(Node, enable_telemetry, [Node]).
-
-disable_telemetry() ->
-    lists:foreach(fun disable_telemetry/1,ekka_mnesia:running_nodes()).
-
-disable_telemetry(Node) when Node =:= node() ->
-    emqx_telemetry:disable();
-disable_telemetry(Node) ->
-    rpc_call(Node, disable_telemetry, [Node]).
-
-get_telemetry_status() ->
-    [{enabled, emqx_telemetry:is_enabled()}].
-
-get_telemetry_data() ->
-    emqx_telemetry:get_telemetry().
-
 %%--------------------------------------------------------------------
 %% Common Table API
 %%--------------------------------------------------------------------
@@ -533,7 +511,7 @@ rpc_call(Node, Fun, Args) ->
     end.
 
 otp_rel() ->
-    lists:concat(["R", erlang:system_info(otp_release), "/", erlang:system_info(version)]).
+    lists:concat([emqx_vm:get_otp_version(), "/", erlang:system_info(version)]).
 
 check_row_limit(Tables) ->
     check_row_limit(Tables, max_row_limit()).
@@ -547,7 +525,7 @@ check_row_limit([Tab|Tables], Limit) ->
     end.
 
 max_row_limit() ->
-    application:get_env(?APP, max_row_limit, ?MAX_ROW_LIMIT).
+    emqx_config:get([?APP, max_row_limit], ?MAX_ROW_LIMIT).
 
 table_size(Tab) -> ets:info(Tab, size).
 

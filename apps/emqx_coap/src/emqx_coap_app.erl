@@ -1,5 +1,5 @@
 %%--------------------------------------------------------------------
-%% Copyright (c) 2020 EMQ Technologies Co., Ltd. All Rights Reserved.
+%% Copyright (c) 2020-2021 EMQ Technologies Co., Ltd. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -29,12 +29,12 @@
 start(_Type, _Args) ->
     {ok, Sup} = emqx_coap_sup:start_link(),
     coap_server_registry:add_handler([<<"mqtt">>], emqx_coap_resource, undefined),
-    coap_server_registry:add_handler([<<"ps">>], emqx_coap_ps_resource, undefined),
-    _ = emqx_coap_ps_topics:start_link(),
+    coap_server_registry:add_handler([<<"ps">>], emqx_coap_pubsub_resource, undefined),
+    _ = emqx_coap_pubsub_topics:start_link(),
     emqx_coap_server:start(application:get_all_env(?APP)),
     {ok,Sup}.
 
 stop(_State) ->
     coap_server_registry:remove_handler([<<"mqtt">>], emqx_coap_resource, undefined),
-    coap_server_registry:remove_handler([<<"ps">>], emqx_coap_ps_resource, undefined),
+    coap_server_registry:remove_handler([<<"ps">>], emqx_coap_pubsub_resource, undefined),
     emqx_coap_server:stop(application:get_all_env(?APP)).

@@ -1,11 +1,11 @@
 $(shell $(CURDIR)/scripts/git-hooks-init.sh)
-REBAR_VERSION = 3.14.3-emqx-5
+REBAR_VERSION = 3.14.3-emqx-8
 REBAR = $(CURDIR)/rebar3
 BUILD = $(CURDIR)/build
 SCRIPTS = $(CURDIR)/scripts
 export PKG_VSN ?= $(shell $(CURDIR)/pkg-vsn.sh)
 export EMQX_DESC ?= EMQ X
-export EMQX_CE_DASHBOARD_VERSION ?= v4.3.0-beta.1
+export EMQX_CE_DASHBOARD_VERSION ?= v4.3.1
 ifeq ($(OS),Windows_NT)
 	export REBAR_COLOR=none
 endif
@@ -40,11 +40,29 @@ eunit: $(REBAR)
 
 .PHONY: proper
 proper: $(REBAR)
-	@ENABLE_COVER_COMPILE=1 $(REBAR) as test proper -d test/props -c
+	@ENABLE_COVER_COMPILE=1 $(REBAR) proper -d test/props -c
 
 .PHONY: ct
 ct: $(REBAR)
 	@ENABLE_COVER_COMPILE=1 $(REBAR) ct --name 'test@127.0.0.1' -c -v
+
+APPS=$(shell $(CURDIR)/scripts/find-apps.sh)
+
+## app/name-ct targets are intended for local tests hence cover is not enabled
+.PHONY: $(APPS:%=%-ct)
+define gen-app-ct-target
+$1-ct:
+	$(REBAR) ct --name 'test@127.0.0.1' -v --suite $(shell $(CURDIR)/scripts/find-suites.sh $1)
+endef
+$(foreach app,$(APPS),$(eval $(call gen-app-ct-target,$(app))))
+
+## apps/name-prop targets
+.PHONY: $(APPS:%=%-prop)
+define gen-app-prop-target
+$1-prop:
+	$(REBAR) proper -d test/props -v -m $(shell $(CURDIR)/scripts/find-props.sh $1)
+endef
+$(foreach app,$(APPS),$(eval $(call gen-app-prop-target,$(app))))
 
 .PHONY: cover
 cover: $(REBAR)
@@ -55,8 +73,9 @@ coveralls: $(REBAR)
 	@ENABLE_COVER_COMPILE=1 $(REBAR) as test coveralls send
 
 .PHONY: $(REL_PROFILES)
-$(REL_PROFILES:%=%): $(REBAR) get-dashboard
-	@$(REBAR) as $(@) release
+
+$(REL_PROFILES:%=%): $(REBAR) get-dashboard conf-segs
+	@$(REBAR) as $(@) do compile,release
 
 ## Not calling rebar3 clean because
 ## 1. rebar3 clean relies on rebar3, meaning it reads config, fetches dependencies etc.
@@ -93,32 +112,47 @@ xref: $(REBAR)
 dialyzer: $(REBAR)
 	@$(REBAR) as check dialyzer
 
-.PHONY: $(REL_PROFILES:%=relup-%)
-$(REL_PROFILES:%=relup-%): $(REBAR)
-ifneq ($(OS),Windows_NT)
-	@$(BUILD) $(@:relup-%=%) relup
-endif
+COMMON_DEPS := $(REBAR) get-dashboard conf-segs
 
-.PHONY: $(REL_PROFILES:%=%-tar) $(PKG_PROFILES:%=%-tar)
-$(REL_PROFILES:%=%-tar) $(PKG_PROFILES:%=%-tar): $(REBAR) get-dashboard
-	@$(BUILD) $(subst -tar,,$(@)) tar
+## rel target is to create release package without relup
+.PHONY: $(REL_PROFILES:%=%-rel) $(PKG_PROFILES:%=%-rel)
+$(REL_PROFILES:%=%-rel) $(PKG_PROFILES:%=%-rel): $(COMMON_DEPS)
+	@$(BUILD) $(subst -rel,,$(@)) rel
 
-## zip targets depend on the corresponding relup and tar artifacts
+## relup target is to create relup instructions
+.PHONY: $(REL_PROFILES:%=%-relup)
+define gen-relup-target
+$1-relup: $(COMMON_DEPS)
+	@$(BUILD) $1 relup
+endef
+ALL_ZIPS = $(REL_PROFILES)
+$(foreach zt,$(ALL_ZIPS),$(eval $(call gen-relup-target,$(zt))))
+
+## zip target is to create a release package .zip with relup
 .PHONY: $(REL_PROFILES:%=%-zip)
 define gen-zip-target
-$1-zip: relup-$1 $1-tar
+$1-zip: $1-relup
 	@$(BUILD) $1 zip
 endef
-ALL_ZIPS = $(REL_PROFILES) $(PKG_PROFILES)
+ALL_ZIPS = $(REL_PROFILES)
 $(foreach zt,$(ALL_ZIPS),$(eval $(call gen-zip-target,$(zt))))
 
-## A pkg target depend on a regular release profile zip to include relup,
-## and also a -pkg suffixed profile tar (without relup) for making deb/rpm package
+## A pkg target depend on a regular release
 .PHONY: $(PKG_PROFILES)
 define gen-pkg-target
-$1: $(subst -pkg,,$1)-zip $1-tar
+$1: $1-rel
 	@$(BUILD) $1 pkg
 endef
 $(foreach pt,$(PKG_PROFILES),$(eval $(call gen-pkg-target,$(pt))))
 
+.PHONY: run
+run: $(PROFILE) quickrun
+
+.PHONY: quickrun
+quickrun:
+	./_build/$(PROFILE)/rel/emqx/bin/emqx console
+
 include docker.mk
+
+conf-segs:
+	@scripts/merge-config.escript

@@ -1,5 +1,5 @@
 %%--------------------------------------------------------------------
-%% Copyright (c) 2020 EMQ Technologies Co., Ltd. All Rights Reserved.
+%% Copyright (c) 2020-2021 EMQ Technologies Co., Ltd. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -18,16 +18,15 @@
 
 -behaviour(application).
 
--emqx_plugin(?MODULE).
+-define(APP, emqx_telemetry).
 
 -export([ start/2
         , stop/1
         ]).
 
 start(_Type, _Args) ->
-    emqx_ctl:register_command(telemetry, {emqx_telemetry_api, cli}),
-    Env = application:get_all_env(emqx_telemetry),
-    emqx_telemetry_sup:start_link(Env).
+    Enabled = emqx_config:get([?APP, enabled], true),
+    emqx_telemetry_sup:start_link([{enabled, Enabled}]).
 
 stop(_State) ->
     emqx_ctl:unregister_command(telemetry),

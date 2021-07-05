@@ -1,5 +1,5 @@
 %%--------------------------------------------------------------------
-%% Copyright (c) 2020 EMQ Technologies Co., Ltd. All Rights Reserved.
+%% Copyright (c) 2020-2021 EMQ Technologies Co., Ltd. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -21,6 +21,7 @@
 
 -include_lib("common_test/include/ct.hrl").
 -include_lib("eunit/include/eunit.hrl").
+-include_lib("snabbkaffe/include/snabbkaffe.hrl").
 
 -import(proplists, [get_value/2]).
 
@@ -28,11 +29,20 @@ all() -> emqx_ct:all(?MODULE).
 
 init_per_testcase(_, Config) ->
     emqx_ct_helpers:boot_modules(all),
-    emqx_ct_helpers:start_apps([emqx_modules, emqx_telemetry]),
+    emqx_ct_helpers:start_apps([emqx_telemetry], fun set_special_configs/1),
     Config.
 
 end_per_testcase(_, _Config) ->
-    emqx_ct_helpers:stop_apps([emqx_telemetry, emqx_modules]).
+    emqx_ct_helpers:stop_apps([emqx_telemetry]).
+
+set_special_configs(emqx_telemetry) ->
+    application:set_env(emqx, plugins_etc_dir,
+                        emqx_ct_helpers:deps_path(emqx_telemetry, "test")),
+    Conf = #{<<"emqx_telemetry">> => #{<<"enabled">> => true}},
+    ok = file:write_file(filename:join(emqx:get_env(plugins_etc_dir), 'emqx_telemetry.conf'), jsx:encode(Conf)),
+    ok;
+set_special_configs(_App) ->
+    ok.
 
 t_uuid(_) ->
     UUID = emqx_telemetry:generate_uuid(),
@@ -40,9 +50,7 @@ t_uuid(_) ->
     ?assertEqual(5, length(Parts)),
     {ok, UUID2} = emqx_telemetry:get_uuid(),
     emqx_telemetry:stop(),
-    emqx_telemetry:start_link([{enabled, true},
-                               {url, "https://telemetry.emqx.io/api/telemetry"},
-                               {report_interval, 7 * 24 * 60 * 60}]),
+    emqx_telemetry:start_link([{enabled, true}]),
     {ok, UUID3} = emqx_telemetry:get_uuid(),
     ?assertEqual(UUID2, UUID3).
 
@@ -73,6 +81,16 @@ t_enable(_) ->
     ?assertEqual(true, emqx_telemetry:is_enabled()),
     ok = emqx_telemetry:disable(),
     ?assertEqual(false, emqx_telemetry:is_enabled()).
+
+t_send_after_enable(_) ->
+    ok = emqx_telemetry:disable(),
+    ok = snabbkaffe:start_trace(),
+    try
+        ok = emqx_telemetry:enable(),
+        ?assertMatch({ok, _}, ?block_until(#{?snk_kind := telemetry_data_reported}, 2000, 100))
+    after
+        ok = snabbkaffe:stop()
+    end.
 
 bin(L) when is_list(L) ->
     list_to_binary(L);

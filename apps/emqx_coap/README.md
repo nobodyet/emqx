@@ -151,8 +151,9 @@ To subscribe any topic, issue following command:
 - if clientid is absent, a "bad_request" will be returned.
 - {topicname} in URI should be percent-encoded to prevent special characters, such as + and #.
 - {username} and {password} are optional.
-- if {username} and {password} are not correct, an uauthorized error will be returned.
+- if {username} or {password} is incorrect, the error code `unauthorized` will be returned.
 - topic is subscribed with qos1.
+- if the subscription failed due to ACL deny, the error code `forbidden` will be returned.
 
 CoAP Client Unobserve Operation (unsubscribe topic)
 ---------------------------------------------------
@@ -168,7 +169,7 @@ To cancel observation, issue following command:
 - if clientid is absent, a "bad_request" will be returned.
 - {topicname} in URI should be percent-encoded to prevent special characters, such as + and #.
 - {username} and {password} are optional.
-- if {username} and {password} are not correct, an uauthorized error will be returned.
+- if {username} or {password} is incorrect, the error code `unauthorized` will be returned.
 
 CoAP Client Notification Operation (subscribed Message)
 -------------------------------------------------------
@@ -179,7 +180,7 @@ Server will issue an observe-notification as a subscribed message.
 
 CoAP Client Publish Operation
 -----------------------------
-Issue a coap put command to do publishment. For example:
+Issue a coap put command to publish messages. For example:
 
 ```
   PUT  coap://localhost/mqtt/{topicname}?c={clientid}&u={username}&p={password}
@@ -191,10 +192,11 @@ Issue a coap put command to do publishment. For example:
 - if clientid is absent, a "bad_request" will be returned.
 - {topicname} in URI should be percent-encoded to prevent special characters, such as + and #.
 - {username} and {password} are optional.
-- if {username} and {password} are not correct, an uauthorized error will be returned.
+- if {username} or {password} is incorrect, the error code `unauthorized` will be returned.
 - payload could be any binary data.
 - payload data type is "application/octet-stream".
 - publish message will be sent with qos0.
+- if the publishing failed due to ACL deny, the error code `forbidden` will be returned.
 
 CoAP Client Keep Alive
 ----------------------
@@ -209,7 +211,7 @@ Device should issue a get command periodically, serve as a ping to keep mqtt ses
 - {any_topicname} is optional, and should be percent-encoded to prevent special characters.
 - {clientid} is mandatory. If clientid is absent, a "bad_request" will be returned.
 - {username} and {password} are optional.
-- if {username} and {password} are not correct, an uauthorized error will be returned.
+- if {username} or {password} is incorrect, the error code `unauthorized` will be returned.
 - coap client should do keepalive work periodically to keep mqtt session online, especially those devices in a NAT network.
 
 
@@ -229,7 +231,7 @@ ClientId, Username, Password and Topic
 ClientId/username/password/topic in the coap URI are the concepts in mqtt. That is to say, emqx-coap is trying to fit coap message into mqtt system, by borrowing the client/username/password/topic from mqtt.
 
 The Auth/ACL/Hook features in mqtt also applies on coap stuff. For example:
-- If username/password is not authorized, coap client will get an uauthorized error.
+- If username/password is not authorized, coap client will get an unauthorized error.
 - If username or clientid is not allowed to published specific topic, coap message will be dropped in fact, although coap client will get an acknoledgement from emqx-coap.
 - If a coap message is published, a 'message.publish' hook is able to capture this message as well.
 

@@ -4,51 +4,87 @@ on:
   push:
     tags:
       - v*
-  release:
-    types:
-      - published
+      - e*
   pull_request:
 
 jobs:
     run_static_analysis:
         runs-on: ubuntu-20.04
-        container: emqx/build-env:erl23.2.2-ubuntu20.04
+        container: emqx/build-env:erl23.2.7.2-emqx-2-ubuntu20.04
 
         steps:
         - uses: actions/checkout@v2
+        - name: set git credentials
+          run: |
+            if make emqx-ee --dry-run > /dev/null 2>&1; then
+              echo "https://ci%40emqx.io:${{ secrets.CI_GIT_TOKEN }}@github.com" > $HOME/.git-credentials
+              git config --global credential.helper store
+            fi
         - name: xref
           run: make xref
         - name: dialyzer
           run: make dialyzer
+
+    run_proper_test:
+        runs-on: ubuntu-20.04
+        container: emqx/build-env:erl23.2.7.2-emqx-2-ubuntu20.04
+
+        steps:
+        - uses: actions/checkout@v2
+        - name: set git credentials
+          run: |
+            if make emqx-ee --dry-run > /dev/null 2>&1; then
+              echo "https://ci%40emqx.io:${{ secrets.CI_GIT_TOKEN }}@github.com" > $HOME/.git-credentials
+              git config --global credential.helper store
+            fi
+        - name: proper
+          run: make proper
 
     run_common_test:
         runs-on: ubuntu-20.04
 
         steps:
         - uses: actions/checkout@v2
-        - name: set up
+        - name: set edition
+          id: set_edition
+          run: |
+            if make emqx-ee --dry-run > /dev/null 2>&1; then
+                echo "EDITION=enterprise" >> $GITHUB_ENV
+            else
+                echo "EDITION=opensource" >> $GITHUB_ENV
+            fi
+        - name: docker compose up
+          if: env.EDITION == 'opensource'
           env:
-            MYSQL_TAG: 8
-            REDIS_TAG: 6
-            MONGO_TAG: 4
-            PGSQL_TAG: 13
-            LDAP_TAG: 2.4.50
             GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           run: |
-            docker-compose -f .ci/apps_tests/docker-compose.yaml build --no-cache
-            docker-compose -f .ci/apps_tests/docker-compose.yaml up -d
+            docker-compose \
+                -f .ci/docker-compose-file/docker-compose.yaml \
+                up -d --build
+        - name: docker compose up
+          if: env.EDITION == 'enterprise'
+          env:
+            GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          timeout-minutes: 20
+          run: |
+            docker-compose \
+                -f .ci/docker-compose-file/docker-compose.yaml \
+                -f .ci/docker-compose-file/docker-compose-enterprise.yaml \
+                up -d --build
         - name: run eunit
           run: |
             docker exec -i erlang bash -c "make eunit"
-            docker exec --env EMQX_EXTRA_PLUGINS=all -i erlang bash -c "./rebar3 eunit --dir $(find lib-extra/ -mindepth 1 -maxdepth 2 -type l | tr '\n' ',')"
         - name: run common test
           run: |
             docker exec -i erlang bash -c "make ct"
-            docker exec --env EMQX_EXTRA_PLUGINS=all -i erlang bash -c "./rebar3 ct --dir $(find lib-extra/ -mindepth 1 -maxdepth 2 -type l | tr '\n' ',')"
         - name: run cover
           run: |
+            printenv > .env
             docker exec -i erlang bash -c "make cover"
-            docker exec -i erlang bash -c "make coveralls"
+            docker exec --env-file .env -i erlang bash -c "make coveralls"
+        - name: cat rebar.crashdump
+          if: failure()
+          run: if [ -f 'rebar3.crashdump' ];then cat 'rebar3.crashdump'; fi
         - uses: actions/upload-artifact@v1
           if: failure()
           with:
@@ -58,3 +94,15 @@ jobs:
           with:
             name: cover
             path: _build/test/cover
+
+    finish:
+      needs: run_common_test
+      runs-on: ubuntu-20.04
+      steps:
+        - name: Coveralls Finished
+          env:
+            GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          run: |
+            curl -v -k https://coveralls.io/webhook \
+                 --header "Content-Type: application/json" \
+                 --data "{\"repo_name\":\"$GITHUB_REPOSITORY\",\"repo_token\":\"$GITHUB_TOKEN\",\"payload\":{\"build_num\":$GITHUB_RUN_ID,\"status\":\"done\"}}" || true

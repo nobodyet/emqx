@@ -1,5 +1,5 @@
 %%--------------------------------------------------------------------
-%% Copyright (c) 2020 EMQ Technologies Co., Ltd. All Rights Reserved.
+%% Copyright (c) 2020-2021 EMQ Technologies Co., Ltd. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -38,7 +38,7 @@
         , trace/1
         , log/1
         , mgmt/1
-        , data/1
+        , acl/1
         ]).
 
 -define(PROC_INFOKEYS, [status,
@@ -115,13 +115,7 @@ mgmt(_) ->
 
 status([]) ->
     {InternalStatus, _ProvidedStatus} = init:get_status(),
-        emqx_ctl:print("Node ~p is ~p~n", [node(), InternalStatus]),
-    case lists:keysearch(?APP, 1, application:which_applications()) of
-        false ->
-            emqx_ctl:print("~s is not running~n", [?APP]);
-        {value, {?APP, _Desc, Vsn}} ->
-            emqx_ctl:print("~s ~s is running~n", [?APP, Vsn])
-    end;
+    emqx_ctl:print("Node ~p ~s is ~p~n", [node(), emqx_app:get_release(), InternalStatus]);
 status(_) ->
      emqx_ctl:usage("status", "Show broker status").
 
@@ -550,31 +544,32 @@ stop_listener(#{listen_on := ListenOn} = Listener, _Input) ->
     end.
 
 %%--------------------------------------------------------------------
-%% @doc data Command
+%% @doc acl Command
 
-data(["export"]) ->
-    case emqx_mgmt_data_backup:export() of
-        {ok, #{filename := Filename}} ->
-            emqx_ctl:print("The emqx data has been successfully exported to ~s.~n", [Filename]);
-        {error, Reason} ->
-            emqx_ctl:print("The emqx data export failed due to ~p.~n", [Reason])
-    end;
-
-data(["import", Filename]) ->
-    case emqx_mgmt_data_backup:import(Filename) of
+acl(["cache-clean", "node", Node]) ->
+    case emqx_mgmt:clean_acl_cache_all(erlang:list_to_existing_atom(Node)) of
         ok ->
-            emqx_ctl:print("The emqx data has been imported successfully.~n");
-        {error, import_failed} ->
-            emqx_ctl:print("The emqx data import failed.~n");
-        {error, unsupported_version} ->
-            emqx_ctl:print("The emqx data import failed: Unsupported version.~n");
+            emqx_ctl:print("ACL cache drain started on node ~s.~n", [Node]);
         {error, Reason} ->
-            emqx_ctl:print("The emqx data import failed: ~0p while reading ~s.~n", [Reason, Filename])
+            emqx_ctl:print("ACL drain failed on node ~s: ~0p.~n", [Node, Reason])
     end;
 
-data(_) ->
-    emqx_ctl:usage([{"data import <File>",   "Import data from the specified file"},
-                    {"data export",          "Export data"}]).
+acl(["cache-clean", "all"]) ->
+    case emqx_mgmt:clean_acl_cache_all() of
+        ok ->
+            emqx_ctl:print("Started ACL cache drain in all nodes~n");
+        {error, Reason} ->
+            emqx_ctl:print("ACL cache-clean failed: ~p.~n", [Reason])
+    end;
+
+acl(["cache-clean", ClientId]) ->
+    emqx_mgmt:clean_acl_cache(ClientId);
+
+acl(_) ->
+    emqx_ctl:usage([{"acl cache-clean all",             "Clears acl cache on all nodes"},
+                    {"acl cache-clean node <Node>",     "Clears acl cache on given node"},
+                    {"acl cache-clean <ClientId>",      "Clears acl cache for given client"}
+                   ]).
 
 %%--------------------------------------------------------------------
 %% Dump ETS
@@ -669,7 +664,7 @@ indent_print({Key, Val}) ->
 listener_identifier(Protocol, ListenOn) ->
     case emqx_listeners:find_id_by_listen_on(ListenOn) of
         false ->
-            "http" ++ _ = atom_to_list(Protocol); %% assert
+            atom_to_list(Protocol);
         ID ->
             ID
     end.

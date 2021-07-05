@@ -1,5 +1,5 @@
 %%--------------------------------------------------------------------
-%% Copyright (c) 2020 EMQ Technologies Co., Ltd. All Rights Reserved.
+%% Copyright (c) 2020-2021 EMQ Technologies Co., Ltd. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -21,9 +21,10 @@
 -include_lib("emqx/include/emqx.hrl").
 -include_lib("emqx/include/logger.hrl").
 
- -include_lib("kernel/include/file.hrl").
+-include_lib("kernel/include/file.hrl").
+-include_lib("snabbkaffe/include/snabbkaffe.hrl").
 
--logger_header("[Telemetry]").
+-include("emqx_telemetry.hrl").
 
 %% Mnesia bootstrap
 -export([mnesia/1]).
@@ -81,13 +82,15 @@
           timer = undefined :: undefined | reference()
         }).
 
-%% The count of 100-nanosecond intervals between the UUID epoch 
+%% The count of 100-nanosecond intervals between the UUID epoch
 %% 1582-10-15 00:00:00 and the UNIX epoch 1970-01-01 00:00:00.
 -define(GREGORIAN_EPOCH_OFFSET, 16#01b21dd213814000).
 
 -define(UNIQUE_ID, 9527).
 
 -define(TELEMETRY, emqx_telemetry).
+
+-rlog_shard({?COMMON_SHARD, ?TELEMETRY}).
 
 %%--------------------------------------------------------------------
 %% Mnesia bootstrap
@@ -139,41 +142,38 @@ get_telemetry() ->
 %% is very small, it should be safe to ignore.
 -dialyzer([{nowarn_function, [init/1]}]).
 init([Opts]) ->
-    State = #state{url = get_value(url, Opts),
-                   report_interval = timer:seconds(get_value(report_interval, Opts))},
+    State = #state{url = ?TELEMETRY_URL,
+                   report_interval = timer:seconds(?REPORT_INTERVAR)},
     NState = case mnesia:dirty_read(?TELEMETRY, ?UNIQUE_ID) of
                  [] ->
-                     Enabled = case search_telemetry_enabled() of
-                                   {error, not_found} ->
-                                       get_value(enabled, Opts);
-                                   {M, F} ->
-                                       erlang:apply(M, F, [])
-                               end,
+                     Enabled = proplists:get_value(enabled, Opts, true),
                      UUID = generate_uuid(),
-                     mnesia:dirty_write(?TELEMETRY, #telemetry{id = ?UNIQUE_ID,
-                                                               uuid = UUID,
-                                                               enabled = Enabled}),
+                     ekka_mnesia:dirty_write(?TELEMETRY, #telemetry{id = ?UNIQUE_ID,
+                                                                    uuid = UUID,
+                                                                    enabled = Enabled}),
                      State#state{enabled = Enabled, uuid = UUID};
                  [#telemetry{uuid = UUID, enabled = Enabled} | _] ->
                      State#state{enabled = Enabled, uuid = UUID}
              end,
     case official_version(emqx_app:get_release()) of
         true ->
-            {ok, ensure_report_timer(NState), {continue, first_report}};
+            _ = erlang:send(self(), first_report),
+            {ok, NState};
         false ->
             {ok, NState#state{enabled = false}}
-    end. 
+    end.
 
 handle_call(enable, _From, State = #state{uuid = UUID}) ->
-    mnesia:dirty_write(?TELEMETRY, #telemetry{id = ?UNIQUE_ID,
-                                              uuid = UUID,
-                                              enabled = true}),
-    {reply, ok, ensure_report_timer(State#state{enabled = true})};
+    ekka_mnesia:dirty_write(?TELEMETRY, #telemetry{id = ?UNIQUE_ID,
+                                                   uuid = UUID,
+                                                   enabled = true}),
+    _ = erlang:send(self(), first_report),
+    {reply, ok, State#state{enabled = true}};
 
 handle_call(disable, _From, State = #state{uuid = UUID}) ->
-    mnesia:dirty_write(?TELEMETRY, #telemetry{id = ?UNIQUE_ID,
-                                              uuid = UUID,
-                                              enabled = false}),
+    ekka_mnesia:dirty_write(?TELEMETRY, #telemetry{id = ?UNIQUE_ID,
+                                                   uuid = UUID,
+                                                   enabled = false}),
     {reply, ok, State#state{enabled = false}};
 
 handle_call(is_enabled, _From, State = #state{enabled = Enabled}) ->
@@ -193,14 +193,19 @@ handle_cast(Msg, State) ->
     ?LOG(error, "Unexpected msg: ~p", [Msg]),
     {noreply, State}.
 
-handle_continue(first_report, State) ->
-    report_telemetry(State),
-    {noreply, State};
-
 handle_continue(Continue, State) ->
     ?LOG(error, "Unexpected continue: ~p", [Continue]),
     {noreply, State}.
 
+handle_info(first_report, State) ->
+    case is_pid(erlang:whereis(emqx)) of
+        true ->
+            report_telemetry(State),
+            {noreply, ensure_report_timer(State)};
+        false ->
+            _ = erlang:send_after(1000, self(), first_report),
+            {noreply, State}
+    end;
 handle_info({timeout, TRef, time_to_report_telemetry_data}, State = #state{timer = TRef,
                                                                            enabled = false}) ->
     {noreply, State};
@@ -223,23 +228,11 @@ code_change(_OldVsn, State, _Extra) ->
 %%------------------------------------------------------------------------------
 
 official_version(Version) ->
-    case re:run(Version,
-                "^\\d+\\.\\d+(?:(-(?:alpha|beta|rc)\\.[1-9][0-9]*)|\\.\\d+)$",
-                [{capture, none}]) of
-        match -> true;
-        nomatch -> false
-    end.
+    Pt = "^\\d+\\.\\d+(?:(-(?:alpha|beta|rc)\\.[1-9][0-9]*)|\\.\\d+)$",
+    match =:= re:run(Version, Pt, [{capture, none}]).
 
 ensure_report_timer(State = #state{report_interval = ReportInterval}) ->
     State#state{timer = emqx_misc:start_timer(ReportInterval, time_to_report_telemetry_data)}.
-
-license() ->
-    case search_telemetry_license() of
-        {error, not_found} ->
-            [{edition, <<"community">>}];
-        {M, F} ->
-            erlang:apply(M, F, [])
-    end.
 
 os_info() ->
     case erlang:system_info(os_type) of
@@ -314,12 +307,7 @@ active_plugins() ->
                     end, [], emqx_plugins:list()).
 
 active_modules() ->
-    lists:foldl(fun({Name, Persistent}, Acc) ->
-                    case Persistent of
-                        true -> [Name | Acc];
-                        false -> Acc
-                    end
-                end, [], emqx_modules:list()).
+    emqx_modules:list().
 
 num_clients() ->
     emqx_stats:getstat('connections.max').
@@ -344,7 +332,7 @@ generate_uuid() ->
 get_telemetry(#state{uuid = UUID}) ->
     OSInfo = os_info(),
     [{emqx_version, bin(emqx_app:get_release())},
-     {license, license()},
+     {license, [{edition, <<"community">>}]},
      {os_name, bin(get_value(os_name, OSInfo))},
      {os_version, bin(get_value(os_version, OSInfo))},
      {otp_version, bin(otp_version())},
@@ -361,65 +349,15 @@ report_telemetry(State = #state{url = URL}) ->
     Data = get_telemetry(State),
     case emqx_json:safe_encode(Data) of
         {ok, Bin} ->
-            httpc_request(post, URL, [], Bin);
+            httpc_request(post, URL, [], Bin),
+            ?tp(debug, telemetry_data_reported, #{});
         {error, Reason} ->
-            ?LOG(debug, "Encode ~p failed due to ~p", [Data, Reason])
+            %% debug? why?
+            ?tp(debug, telemetry_data_encode_error, #{data => Data, reason => Reason})
     end.
 
 httpc_request(Method, URL, Headers, Body) ->
     httpc:request(Method, {URL, Headers, "application/json", Body}, [], []).
-
-ignore_lib_apps(Apps) ->
-    LibApps = [kernel, stdlib, sasl, appmon, eldap, erts,
-               syntax_tools, ssl, crypto, mnesia, os_mon,
-               inets, goldrush, gproc, runtime_tools,
-               snmp, otp_mibs, public_key, asn1, ssh, hipe,
-               common_test, observer, webtool, xmerl, tools,
-               test_server, compiler, debugger, eunit, et,
-               wx],
-    [AppName || {AppName, _, _} <- Apps, not lists:member(AppName, LibApps)].
-
-search_telemetry_license() ->
-    search_function(telemetry_license).
-
-search_telemetry_enabled() ->
-    search_function(telemetry_enabled).
-
-search_function(Name) ->
-    case search_attrs(Name) of
-        [] ->
-            {error, not_found};
-        Callbacks ->
-            case lists:filter(fun({M, F}) ->
-                                  erlang:function_exported(M, F, 0)
-                              end, Callbacks) of
-                [] -> {error, not_found};
-                [{M, F} | _] -> {M, F}
-            end
-    end.
-
-search_attrs(Name) ->
-    Apps = ignore_lib_apps(application:loaded_applications()),
-    search_attrs(Name, Apps).
-
-search_attrs(Name, Apps) ->
-    lists:foldl(fun(App, Acc) ->
-                    {ok, Modules} = application:get_key(App, modules),
-                    Attrs = lists:foldl(fun(Module, Acc0) ->
-                                                case proplists:get_value(Name, module_attributes(Module), undefined) of
-                                                    undefined -> Acc0;
-                                                    Attrs0 -> Acc0 ++ Attrs0
-                                                end
-                                            end, [], Modules),
-                    Acc ++ Attrs
-                end, [], Apps).
-
-module_attributes(Module) ->
-    try Module:module_info(attributes)
-    catch
-        error:undef -> [];
-        error:Reason -> error(Reason)
-    end.
 
 bin(L) when is_list(L) ->
     list_to_binary(L);

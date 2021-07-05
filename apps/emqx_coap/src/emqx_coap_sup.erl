@@ -1,5 +1,5 @@
 %%--------------------------------------------------------------------
-%% Copyright (c) 2020 EMQ Technologies Co., Ltd. All Rights Reserved.
+%% Copyright (c) 2020-2021 EMQ Technologies Co., Ltd. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -32,11 +32,11 @@ init(_Args) ->
                  shutdown => 5000,
                  type     => worker,
                  modules  => [emqx_coap_registry]},
-    PsTopics = #{id       => emqx_coap_ps_topics,
-                 start    => {emqx_coap_ps_topics, start_link, []},
+    PsTopics = #{id       => emqx_coap_pubsub_topics,
+                 start    => {emqx_coap_pubsub_topics, start_link, []},
                  restart  => permanent,
                  shutdown => 5000,
                  type     => worker,
-                 modules  => [emqx_coap_ps_topics]},
+                 modules  => [emqx_coap_pubsub_topics]},
     {ok, {{one_for_all, 10, 3600}, [Registry, PsTopics]}}.
 

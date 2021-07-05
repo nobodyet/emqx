@@ -1,5 +1,5 @@
 %%--------------------------------------------------------------------
-%% Copyright (c) 2020 EMQ Technologies Co., Ltd. All Rights Reserved.
+%% Copyright (c) 2020-2021 EMQ Technologies Co., Ltd. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -35,6 +35,7 @@
         , contains_topic/3
         , contains_topic_match/2
         , contains_topic_match/3
+        , null/0
         ]).
 
 %% Arithmetic Funcs
@@ -180,6 +181,10 @@
 %% Date functions
 -export([ now_rfc3339/0
         , now_rfc3339/1
+        , unix_ts_to_rfc3339/1
+        , unix_ts_to_rfc3339/2
+        , rfc3339_to_unix_ts/1
+        , rfc3339_to_unix_ts/2
         , now_timestamp/0
         , now_timestamp/1
         ]).
@@ -295,6 +300,9 @@ find_topic_filter(Filter, TopicFilters, Func) ->
     catch
         throw:Result -> Result
     end.
+
+null() ->
+    undefined.
 
 %%------------------------------------------------------------------------------
 %% Arithmetic Funcs
@@ -512,12 +520,10 @@ map(Data) ->
     emqx_rule_utils:map(Data).
 
 bin2hexstr(Bin) when is_binary(Bin) ->
-    IntL = binary_to_list(Bin),
-    list_to_binary([io_lib:format("~2.16.0B", [Int]) || Int <- IntL]).
+    emqx_misc:bin2hexstr_A_F(Bin).
 
 hexstr2bin(Str) when is_binary(Str) ->
-    list_to_binary([binary_to_integer(W, 16) || <<W:2/binary>> <= Str]).
-
+    emqx_misc:hexstr2bin(Str).
 
 %%------------------------------------------------------------------------------
 %% NULL Funcs
@@ -776,14 +782,7 @@ sha256(S) when is_binary(S) ->
     hash(sha256, S).
 
 hash(Type, Data) ->
-    hexstring(crypto:hash(Type, Data)).
-
-hexstring(<<X:128/big-unsigned-integer>>) ->
-    iolist_to_binary(io_lib:format("~32.16.0b", [X]));
-hexstring(<<X:160/big-unsigned-integer>>) ->
-    iolist_to_binary(io_lib:format("~40.16.0b", [X]));
-hexstring(<<X:256/big-unsigned-integer>>) ->
-    iolist_to_binary(io_lib:format("~64.16.0b", [X])).
+    emqx_misc:bin2hexstr_a_f(crypto:hash(Type, Data)).
 
 %%------------------------------------------------------------------------------
 %% Data encode and decode Funcs
@@ -843,9 +842,22 @@ now_rfc3339() ->
     now_rfc3339(<<"second">>).
 
 now_rfc3339(Unit) ->
+    unix_ts_to_rfc3339(now_timestamp(Unit), Unit).
+
+unix_ts_to_rfc3339(Epoch) ->
+    unix_ts_to_rfc3339(Epoch, <<"second">>).
+
+unix_ts_to_rfc3339(Epoch, Unit) when is_integer(Epoch) ->
     emqx_rule_utils:bin(
         calendar:system_time_to_rfc3339(
-            now_timestamp(Unit), [{unit, time_unit(Unit)}])).
+            Epoch, [{unit, time_unit(Unit)}])).
+
+rfc3339_to_unix_ts(DateTime) ->
+    rfc3339_to_unix_ts(DateTime, <<"second">>).
+
+rfc3339_to_unix_ts(DateTime, Unit) when is_binary(DateTime) ->
+    calendar:rfc3339_to_system_time(binary_to_list(DateTime),
+        [{unit, time_unit(Unit)}]).
 
 now_timestamp() ->
     erlang:system_time(second).
@@ -862,6 +874,7 @@ time_unit(<<"nanosecond">>) -> nanosecond.
 %% Here the emqx_rule_funcs module acts as a proxy, forwarding
 %% the function handling to the worker module.
 %% @end
+-ifdef(EMQX_ENTERPRISE).
 '$handle_undefined_function'(schema_decode, [SchemaId, Data|MoreArgs]) ->
     emqx_schema_parser:decode(SchemaId, Data, MoreArgs);
 '$handle_undefined_function'(schema_decode, Args) ->
@@ -877,6 +890,13 @@ time_unit(<<"nanosecond">>) -> nanosecond.
 
 '$handle_undefined_function'(Fun, Args) ->
     error({sql_function_not_supported, function_literal(Fun, Args)}).
+-else.
+'$handle_undefined_function'(sprintf, [Format|Args]) ->
+    erlang:apply(fun sprintf_s/2, [Format, Args]);
+
+'$handle_undefined_function'(Fun, Args) ->
+    error({sql_function_not_supported, function_literal(Fun, Args)}).
+-endif. % EMQX_ENTERPRISE
 
 map_path(Key) ->
     {path, [{key, P} || P <- string:split(Key, ".", all)]}.

@@ -1,5 +1,5 @@
 %%--------------------------------------------------------------------
-%% Copyright (c) 2020 EMQ Technologies Co., Ltd. All Rights Reserved.
+%% Copyright (c) 2020-2021 EMQ Technologies Co., Ltd. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -19,8 +19,6 @@
 -include("emqx_mgmt.hrl").
 
 -include_lib("emqx/include/emqx.hrl").
-
--import(minirest, [return/1]).
 
 -rest_api(#{name   => list_all_plugins,
             method => 'GET',
@@ -71,36 +69,36 @@
         ]).
 
 list(#{node := Node}, _Params) ->
-    return({ok, [format(Plugin) || Plugin <- emqx_mgmt:list_plugins(Node)]});
+    minirest:return({ok, [format(Plugin) || Plugin <- emqx_mgmt:list_plugins(Node)]});
 
 list(_Bindings, _Params) ->
-    return({ok, [format({Node, Plugins}) || {Node, Plugins} <- emqx_mgmt:list_plugins()]}).
+    minirest:return({ok, [format({Node, Plugins}) || {Node, Plugins} <- emqx_mgmt:list_plugins()]}).
 
 load(#{node := Node, plugin := Plugin}, _Params) ->
-    return(emqx_mgmt:load_plugin(Node, Plugin)).
+    minirest:return(emqx_mgmt:load_plugin(Node, Plugin)).
 
 unload(#{node := Node, plugin := Plugin}, _Params) ->
-    return(emqx_mgmt:unload_plugin(Node, Plugin));
+    minirest:return(emqx_mgmt:unload_plugin(Node, Plugin));
 
 unload(#{plugin := Plugin}, _Params) ->
     Results = [emqx_mgmt:unload_plugin(Node, Plugin) || {Node, _Info} <- emqx_mgmt:list_nodes()],
     case lists:filter(fun(Item) -> Item =/= ok end, Results) of
         [] ->
-            return(ok);
+            minirest:return(ok);
         Errors ->
-            return(lists:last(Errors))
+            minirest:return(lists:last(Errors))
     end.
 
 reload(#{node := Node, plugin := Plugin}, _Params) ->
-    return(emqx_mgmt:reload_plugin(Node, Plugin));
+    minirest:return(emqx_mgmt:reload_plugin(Node, Plugin));
 
 reload(#{plugin := Plugin}, _Params) ->
     Results = [emqx_mgmt:reload_plugin(Node, Plugin) || {Node, _Info} <- emqx_mgmt:list_nodes()],
     case lists:filter(fun(Item) -> Item =/= ok end, Results) of
         [] ->
-            return(ok);
+            minirest:return(ok);
         Errors ->
-            return(lists:last(Errors))
+            minirest:return(lists:last(Errors))
     end.
 
 format({Node, Plugins}) ->
@@ -108,10 +106,8 @@ format({Node, Plugins}) ->
 
 format(#plugin{name = Name,
                descr = Descr,
-               active = Active,
-               type = Type}) ->
+               active = Active}) ->
     #{name => Name,
       description => iolist_to_binary(Descr),
-      active => Active,
-      type => Type}.
+      active => Active}.
 

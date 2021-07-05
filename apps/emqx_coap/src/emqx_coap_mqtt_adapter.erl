@@ -1,5 +1,5 @@
 %%--------------------------------------------------------------------
-%% Copyright (c) 2020 EMQ Technologies Co., Ltd. All Rights Reserved.
+%% Copyright (c) 2020-2021 EMQ Technologies Co., Ltd. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -37,7 +37,9 @@
         , stop/1
         ]).
 
--export([call/2]).
+-export([ call/2
+        , call/3
+        ]).
 
 %% gen_server.
 -export([ init/1
@@ -93,6 +95,9 @@ publish(Pid, Topic, Payload) ->
 
 %% For emqx_management plugin
 call(Pid, Msg) ->
+    call(Pid, Msg, infinity).
+
+call(Pid, Msg, _) ->
     Pid ! Msg, ok.
 
 %%--------------------------------------------------------------------
@@ -100,8 +105,8 @@ call(Pid, Msg) ->
 %%--------------------------------------------------------------------
 
 init({ClientId, Username, Password, Channel}) ->
-    ?LOG(debug, "try to start adapter ClientId=~p, Username=~p, Password=~p, Channel=~p",
-         [ClientId, Username, Password, Channel]),
+    ?LOG(debug, "try to start adapter ClientId=~p, Username=~p, Password=~p, "
+                "Channel=~0p", [ClientId, Username, Password, Channel]),
     State0 = #state{peername = Channel,
                     clientid = ClientId,
                     username = Username,
@@ -133,8 +138,8 @@ init({ClientId, Username, Password, Channel}) ->
 handle_call({subscribe, Topic, CoapPid}, _From, State=#state{sub_topics = TopicList}) ->
     NewTopics = proplists:delete(Topic, TopicList),
     IsWild = emqx_topic:wildcard(Topic),
-    chann_subscribe(Topic, State),
-    {reply, ok, State#state{sub_topics = [{Topic, {IsWild, CoapPid}}|NewTopics]}, hibernate};
+    {reply, chann_subscribe(Topic, State), State#state{sub_topics =
+        [{Topic, {IsWild, CoapPid}}|NewTopics]}, hibernate};
 
 handle_call({unsubscribe, Topic, _CoapPid}, _From, State=#state{sub_topics = TopicList}) ->
     NewTopics = proplists:delete(Topic, TopicList),
@@ -142,8 +147,7 @@ handle_call({unsubscribe, Topic, _CoapPid}, _From, State=#state{sub_topics = Top
     {reply, ok, State#state{sub_topics = NewTopics}, hibernate};
 
 handle_call({publish, Topic, Payload}, _From, State) ->
-    _ = chann_publish(Topic, Payload, State),
-    {reply, ok, State};
+    {reply, chann_publish(Topic, Payload, State), State};
 
 handle_call(info, _From, State) ->
     {reply, info(State), State};
@@ -218,13 +222,15 @@ code_change(_OldVsn, State, _Extra) ->
 
 chann_subscribe(Topic, State = #state{clientid = ClientId}) ->
     ?LOG(debug, "subscribe Topic=~p", [Topic]),
-    case emqx_access_control:check_acl(clientinfo(State), subscribe, Topic) of
+    case emqx_access_control:authorize(clientinfo(State), subscribe, Topic) of
         allow ->
             emqx_broker:subscribe(Topic, ClientId, ?SUBOPTS),
-            emqx_hooks:run('session.subscribed', [clientinfo(State), Topic, ?SUBOPTS]);
+            emqx_hooks:run('session.subscribed', [clientinfo(State), Topic, ?SUBOPTS]),
+            ok;
         deny  ->
             ?LOG(warning, "subscribe to ~p by clientid ~p failed due to acl check.",
-                 [Topic, ClientId])
+                 [Topic, ClientId]),
+            {error, forbidden}
     end.
 
 chann_unsubscribe(Topic, State) ->
@@ -235,14 +241,16 @@ chann_unsubscribe(Topic, State) ->
 
 chann_publish(Topic, Payload, State = #state{clientid = ClientId}) ->
     ?LOG(debug, "publish Topic=~p, Payload=~p", [Topic, Payload]),
-    case emqx_access_control:check_acl(clientinfo(State), publish, Topic) of
+    case emqx_access_control:authorize(clientinfo(State), publish, Topic) of
         allow ->
-            emqx_broker:publish(
-                emqx_message:set_flag(retain, false,
-                                      emqx_message:make(ClientId, ?QOS_0, Topic, Payload)));
+            _ = emqx_broker:publish(
+                    emqx_message:set_flag(retain, false,
+                        emqx_message:make(ClientId, ?QOS_0, Topic, Payload))),
+            ok;
         deny  ->
             ?LOG(warning, "publish to ~p by clientid ~p failed due to acl check.",
-                 [Topic, ClientId])
+                 [Topic, ClientId]),
+            {error, forbidden}
     end.
 
 
